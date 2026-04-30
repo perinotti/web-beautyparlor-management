@@ -19,7 +19,7 @@ load_dotenv()
 
 # Lê a URL de conexão do banco de dados a partir das variáveis de ambiente.
 # Esta é uma prática de segurança fundamental para evitar expor credenciais no código.
-SQLALCHEMY_DATABASE_URL = os.getenv("DATABASE_URL")
+SQLALCHEMY_DATABASE_URL = os.getenv("SQLALCHEMY_DATABASE_URL", "sqlite:///./database.db")
 
 # O 'engine' é o ponto de entrada principal do SQLAlchemy para o banco de dados.
 # Ele gerencia as conexões e a comunicação com o PostgreSQL.

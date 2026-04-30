@@ -6,19 +6,19 @@ from sqlalchemy import text, or_
 from collections import defaultdict
 from pathlib import Path
 from fastapi.templating import Jinja2Templates
-from datetime import datetime, date, time, timedelta, timezone
-import pytz
+from datetime import datetime, date, time, timedelta
 from decimal import Decimal
 from typing import Optional
 import math
 import models
 from dependencies import get_db, get_current_user
 from security import verificar_senha, gerar_hash_senha
+from utils.tempo import obter_agora_local
 
 router = APIRouter(
-    prefix="/painel",  # Todas as rotas aqui começarão com /painel
+    prefix="/painel",
     tags=["Painel Web"],
-    dependencies=[Depends(get_current_user)] # Protege todas as rotas deste router
+    dependencies=[Depends(get_current_user)]
 )
 
 # Configuração dos Templates
@@ -28,22 +28,6 @@ templates = Jinja2Templates(directory=str(Path(BASE_DIR, 'templates')))
 
 @router.get("/", response_class=HTMLResponse)
 async def get_painel_gestao(request: Request, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
-    """
-    Exibe o painel principal da aplicação, a página inicial após o login.
-
-    A principal responsabilidade desta rota é buscar e exibir a lista de todos
-    os funcionários que estão atualmente ativos no sistema, permitindo que o
-    usuário logado navegue para a agenda de cada um deles.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI, necessário para os templates.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'painel.html',
-        populada com a lista de funcionários ativos.
-    """
     funcionarios = db.query(models.Funcionario).filter(models.Funcionario.is_ativo == True).order_by(models.Funcionario.nome).all()
     context = {"request": request, "funcionarios": funcionarios, "user": user}
     return templates.TemplateResponse("painel.html", context)
@@ -56,40 +40,16 @@ async def get_dashboard_page(
     user: dict = Depends(get_current_user),
     data: Optional[date] = Query(None)
 ):
-    """
-    Exibe o dashboard de desempenho semanal para o funcionário logado.
-
-    Esta rota calcula o desempenho total de um funcionário num período de trabalho
-    (Terça a Sábado), somando os valores dos serviços concluídos com as vendas
-    de produtos que foram marcadas como comissionáveis.
-
-    A função implementa a regra de negócio do dia de pagamento: com base numa
-    data de referência (o dia atual ou uma data da URL), ela decide qual semana
-    exibir. Até Quarta-feira, mostra a semana anterior completa (para a conferência
-    do pagamento); a partir de Quinta-feira, mostra a semana corrente. A função
-    também fornece datas para a navegação entre semanas.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        db (Session): A sessão do banco de dados.
-        user (dict): Os dados do usuário logado.
-        data (Optional[date]): Uma data de referência opcional para calcular a semana.
-
-    Returns:
-        TemplateResponse: Renderiza a página 'dashboard.html' com os dados de
-                          desempenho consolidados e as datas para navegação.
-    """
-    # 1. Determina a data de referência
     if data:
         data_base = data
     else:
-        hoje = date.today()
+        # Substituído date.today() pela nova função centralizada
+        hoje = obter_agora_local().date()
         if hoje.weekday() in [6, 0, 1, 2]:
             data_base = hoje - timedelta(days=7)
         else:
             data_base = hoje
 
-    # 2. Calcula a semana de trabalho
     weekday_base = data_base.weekday()
     offset_para_terca = (weekday_base - 1 + 7) % 7
     data_inicio = data_base - timedelta(days=offset_para_terca)
@@ -101,7 +61,6 @@ async def get_dashboard_page(
     inicio_periodo = datetime.combine(data_inicio, time.min)
     fim_periodo = datetime.combine(data_fim, time.max)
 
-    # 3. Calcula o total de vendas de SERVIÇOS
     agendamentos_concluidos = db.query(models.Agendamento).filter(
         models.Agendamento.funcionario_id == user.id,
         models.Agendamento.status == models.StatusAgendamento.CONCLUIDO,
@@ -109,7 +68,6 @@ async def get_dashboard_page(
     ).all()
     total_vendas_servicos = sum(ag.preco_final for ag in agendamentos_concluidos if ag.preco_final is not None)
 
-    # 4. Calcula o total de vendas de PRODUTOS com comissão
     vendas_produtos_comissionadas = db.query(models.FluxoCaixa).filter(
         models.FluxoCaixa.funcionario_id == user.id,
         models.FluxoCaixa.tipo == models.TipoFluxoCaixa.ENTRADA,
@@ -119,14 +77,12 @@ async def get_dashboard_page(
     ).all()
     total_vendas_produtos = sum(venda.valor for venda in vendas_produtos_comissionadas)
 
-    # 5. Soma os totais para o desempenho final
     total_vendas = total_vendas_servicos + total_vendas_produtos
 
-    # Prepara o contexto para enviar ao template
     context = {
         "request": request,
         "user": user,
-        "agendamentos_concluidos": agendamentos_concluidos, # Mantemos para a lista de serviços
+        "agendamentos_concluidos": agendamentos_concluidos,
         "total_vendas": total_vendas,
         "data_inicio_str": data_inicio.strftime("%d/%m/%Y"),
         "data_fim_str": data_fim.strftime("%d/%m/%Y"),
@@ -146,35 +102,11 @@ async def get_pagina_historico_desempenho(
     cliente_id_str: str | None = Query(default=None, alias="cliente_id"),
     servico_id_str: str | None = Query(default=None, alias="servico_id")
 ):
-    """
-    Exibe o relatório de histórico de desempenho para o funcionário logado.
-
-    Esta rota serve como uma ferramenta de análise de vendas pessoal, permitindo
-    que o funcionário filtre todos os seus serviços concluídos por um intervalo
-    de datas, cliente específico ou serviço específico. A consulta ao banco de dados
-    é construída dinamicamente, adicionando filtros apenas para os parâmetros
-    que foram fornecidos pelo usuário na requisição.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-        data_inicio (date | None): Data de início opcional para o filtro de período.
-        data_fim (date | None): Data de fim opcional para o filtro de período.
-        cliente_id (int | None): ID opcional do cliente para filtrar os resultados.
-        servico_id (int | None): ID opcional do serviço para filtrar os resultados.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'historico_desempenho.html',
-                          populada com os agendamentos filtrados e as opções para os
-                          menus de filtro.
-    """
     data_inicio = date.fromisoformat(data_inicio_str) if data_inicio_str else None
     data_fim = date.fromisoformat(data_fim_str) if data_fim_str else None
     cliente_id = int(cliente_id_str) if cliente_id_str else None
     servico_id = int(servico_id_str) if servico_id_str else None
 
-    # Constrói a base da consulta
     query = db.query(models.Agendamento).options(
         joinedload(models.Agendamento.cliente),
         joinedload(models.Agendamento.servico)
@@ -183,7 +115,6 @@ async def get_pagina_historico_desempenho(
         models.Agendamento.status == models.StatusAgendamento.CONCLUIDO
     )
 
-    # Aplica os filtros dinamicamente
     if data_inicio:
         inicio_periodo = datetime.combine(data_inicio, time.min)
         query = query.filter(models.Agendamento.data_hora >= inicio_periodo)
@@ -198,7 +129,6 @@ async def get_pagina_historico_desempenho(
     agendamentos_filtrados = query.order_by(models.Agendamento.data_hora.desc()).all()
     total_vendas_periodo = sum(ag.preco_final for ag in agendamentos_filtrados if ag.preco_final is not None)
 
-    # Prepara dados para os menus dropdown do formulário de filtro
     todos_clientes = db.query(models.Cliente).order_by(models.Cliente.nome).all()
     servicos_para_filtro = db.query(models.Servico).options(
         joinedload(models.Servico.categoria)
@@ -226,30 +156,6 @@ async def get_pagina_listar_clientes(
     request: Request, db: Session = Depends(get_db), user: dict = Depends(get_current_user),
     q: str | None = Query(default=None), page: int = Query(default=1, ge=1)
 ):
-    """
-    Exibe o "Hub de Clientes", a página central para a gestão de clientes.
-
-    Esta rota serve como o ponto de entrada principal para todas as operações
-    relacionadas a clientes. Ela é responsável por:
-
-    1. Filtrar clientes com base num termo de pesquisa opcional (nome ou WhatsApp).
-    2. Paginar os resultados para garantir uma interface limpa e performática.
-    3. Preparar e fornecer todos os dados necessários para a janela modal de
-       "Vender Pacote", incluindo a lista completa de clientes e serviços.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-        q (str | None): Termo de pesquisa opcional para filtrar a lista de clientes.
-        page (int): O número da página atual para a paginação, com valor padrão 1.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'painel_clientes.html',
-                          populada com a lista paginada de clientes e todos os dados
-                          necessários para as funcionalidades da página.
-    """
-    # ... (código da função get_pagina_listar_clientes)
     page_size = 15
     query_clientes = db.query(models.Cliente)
     if q:
@@ -286,40 +192,14 @@ async def get_pagina_vender_produto(
         db: Session = Depends(get_db),
         user: dict = Depends(get_current_user)
 ):
-    """
-    Exibe a página para a venda de produtos.
-
-    Esta rota GET prepara e serve a interface de ponto de venda (PDV) para produtos.
-    As suas principais responsabilidades são:
-
-    1.  Buscar todos os produtos ativos no catálogo.
-    2.  Buscar a configuração global de "comissão máxima" para informar os limites ao funcionário.
-    3.  Formatar os dados dos produtos de duas maneiras para o frontend:
-        - Uma lista de objetos para a renderização da tabela na página.
-        - Um dicionário JSON para ser usado pelo JavaScript, permitindo que o
-          resumo da venda seja calculado dinamicamente no lado do cliente.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        db (Session): A sessão do banco de dados.
-        user (dict): Os dados do funcionário logado.
-
-    Returns:
-        TemplateResponse: Renderiza a página 'vender_produto.html' com a lista
-                          de produtos, o JSON para o script e a comissão máxima permitida.
-    """
     produtos_ativos = db.query(models.Produto).filter(
         models.Produto.is_ativo == True
     ).order_by(models.Produto.nome).all()
 
-    # Busca a configuração de comissão máxima definida pelo admin
     comissao_maxima_obj = db.query(models.Configuracao).filter(
         models.Configuracao.chave == "COMISSAO_MAXIMA_PRODUTO"
     ).first()
-    # Usa um valor padrão de 10% se a configuração não existir
     comissao_maxima = comissao_maxima_obj.valor if comissao_maxima_obj else "10"
-
-    # Prepara os dados para o JavaScript da página
     produtos_json = {p.id: {"nome": p.nome, "valor": float(p.valor)} for p in produtos_ativos}
 
     context = {
@@ -342,25 +222,13 @@ async def handle_form_vender_produto(
         metodo_pagamento: str = Form(...),
         comissao_percentual: Optional[Decimal] = Form(None)
 ):
-    """
-    Processa o formulário de venda de produtos, com lógica de comissão por percentagem.
-
-    Esta rota POST valida a comissão inserida pelo funcionário contra o limite
-    máximo definido pelo administrador. Se válida, cria registos no Fluxo de Caixa
-    para cada produto vendido, armazenando a percentagem de comissão exata para
-    futuros cálculos de desempenho.
-    """
-    # 1. Busca o limite máximo de comissão configurado pelo admin
     comissao_maxima_obj = db.query(models.Configuracao).filter(
         models.Configuracao.chave == "COMISSAO_MAXIMA_PRODUTO"
     ).first()
     limite_comissao = Decimal(comissao_maxima_obj.valor) if comissao_maxima_obj else Decimal("10")
-
-    # 2. Valida a comissão recebida do formulário
     comissao_a_registrar = comissao_percentual if comissao_percentual is not None else Decimal("0.00")
 
     if not (0 <= comissao_a_registrar <= limite_comissao):
-        # Se a comissão for inválida, recarrega a página com uma mensagem de erro
         produtos_ativos = db.query(models.Produto).filter(models.Produto.is_ativo == True).order_by(
             models.Produto.nome).all()
         produtos_json = {p.id: {"nome": p.nome, "valor": float(p.valor)} for p in produtos_ativos}
@@ -371,7 +239,6 @@ async def handle_form_vender_produto(
         }
         return templates.TemplateResponse("vender_produto.html", context, status_code=400)
 
-    # 3. Se a validação passar, processa a venda
     for produto_id, quantidade in zip(produto_ids, quantidades):
         if quantidade > 0:
             produto = db.query(models.Produto).filter(models.Produto.id == produto_id).first()
@@ -379,7 +246,6 @@ async def handle_form_vender_produto(
                 continue
 
             valor_total_item = produto.valor * quantidade
-
             novo_registro_caixa = models.FluxoCaixa(
                 descricao=f"Venda produto: {quantidade}x {produto.nome}",
                 valor=valor_total_item,
@@ -393,7 +259,6 @@ async def handle_form_vender_produto(
             db.add(novo_registro_caixa)
 
     db.commit()
-
     return RedirectResponse(
         url="/painel/vender-produto?success=true",
         status_code=status.HTTP_303_SEE_OTHER
@@ -404,25 +269,8 @@ async def handle_form_vender_produto(
 async def get_pagina_novo_cliente(
     request: Request, user: dict = Depends(get_current_user), error: str | None = None
 ):
-    """
-    Exibe o formulário para o cadastro manual de um novo cliente.
-
-    Esta rota GET serve a página que contém o formulário para adicionar um
-    cliente diretamente ao sistema. Ela também é utilizada para re-renderizar
-    o formulário com uma mensagem de erro, caso a submissão via POST falhe
-    (por exemplo, ao tentar cadastrar um WhatsApp já existente).
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-        error (str | None): Uma mensagem de erro opcional a ser exibida no template.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'painel_cliente_form.html'.
-    """
     context = {"request": request, "user": user, "error": error}
     return templates.TemplateResponse("painel_cliente_form.html", context)
-
 
 
 @router.post("/clientes/novo")
@@ -430,30 +278,6 @@ async def handle_form_novo_cliente(
     request: Request, db: Session = Depends(get_db), user: dict = Depends(get_current_user),
     nome: str = Form(...), whatsapp: str = Form(...)
 ):
-    """
-    Processa os dados do formulário para o cadastro manual de um novo cliente.
-
-    Esta rota POST recebe o nome e o WhatsApp de um novo cliente. Ela primeiro
-    limpa a máscara do número de telefone e depois realiza uma validação
-    crucial para verificar se o WhatsApp já existe no sistema, evitando
-    duplicatas.
-
-    Se o cliente for novo, ele é salvo e o sistema redireciona o usuário
-    diretamente para a página de histórico do cliente recém-criado, otimizando
-    o fluxo de trabalho para uma possível venda de pacote imediata.
-
-    Args:
-        request (Request): O objeto de requisição, passado para re-renderizar o formulário em caso de erro.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-        nome (str): O nome do cliente, recebido do formulário.
-        whatsapp (str): O número de WhatsApp do cliente, recebido do formulário.
-
-    Returns:
-        RedirectResponse: Em caso de sucesso, redireciona para a página de histórico do cliente recém-criado.
-        Coroutine[TemplateResponse]: Em caso de WhatsApp duplicado, re-renderiza o formulário de cadastro com uma mensagem de erro.
-    """
-    # ... (código da função handle_form_novo_cliente)
     whatsapp_limpo = "".join(filter(str.isdigit, whatsapp))
     cliente_existente = db.query(models.Cliente).filter(models.Cliente.whatsapp == whatsapp_limpo).first()
     if cliente_existente:
@@ -465,33 +289,10 @@ async def handle_form_novo_cliente(
     return RedirectResponse(url=f"/painel/clientes/{novo_cliente.id}/historico", status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.get("/clientes/{cliente_id}/historico", response_class=HTMLResponse)
 async def get_pagina_historico_cliente(
     request: Request, cliente_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)
 ):
-    """
-    Exibe o painel de histórico completo de um cliente específico.
-
-    Esta rota serve como o "Dashboard do Cliente", agregando todas as
-    informações relevantes sobre ele. Ela realiza duas buscas principais:
-
-    1. Busca os dados do cliente, utilizando 'eager loading' (joinedload) para
-       carregar eficientemente o seu extrato de transações de crédito.
-    2. Busca o histórico completo de agendamentos do cliente, carregando também
-       os dados do serviço e do funcionário associados a cada um.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        cliente_id (int): O ID do cliente a ser consultado, vindo da URL.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'painel_cliente_historico.html',
-        populada com os dados do cliente e seus históricos.
-    """
-    # ... (código da função get_pagina_historico_cliente)
     cliente = db.query(models.Cliente).options(
         joinedload(models.Cliente.transacoes_credito)
     ).filter(models.Cliente.id == cliente_id).first()
@@ -511,29 +312,6 @@ async def get_pagina_historico_cliente(
 async def get_pagina_adicionar_creditos(
     request: Request, cliente_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)
 ):
-    """
-    Exibe o formulário para a venda de pacotes de crédito para um cliente.
-
-    Esta rota GET prepara todos os dados necessários para a complexa e interativa
-    página de venda de pacotes. Suas responsabilidades incluem:
-
-    1. Buscar os dados do cliente específico.
-    2. Buscar todos os serviços ativos e agrupá-los por categoria para o menu de seleção.
-    3. Buscar a configuração global de "limite de desconto" para aplicá-la como uma trava de segurança no formulário.
-    4. Serializar os dados dos serviços para um formato JSON, para que o JavaScript
-       possa realizar os cálculos de valor do pacote em tempo real na interface.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        cliente_id (int): O ID do cliente para o qual o pacote será vendido.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'painel_cliente_creditos.html',
-        populada com todos os dados necessários para a sua interatividade.
-    """
-    # ... (código da função get_pagina_adicionar_creditos)
     cliente = db.query(models.Cliente).filter(models.Cliente.id == cliente_id).first()
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -558,7 +336,6 @@ async def get_pagina_adicionar_creditos(
     return templates.TemplateResponse("painel_cliente_creditos.html", context)
 
 
-
 @router.post("/clientes/{cliente_id}/creditos")
 async def handle_form_adicionar_creditos(
     request: Request, cliente_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user),
@@ -566,37 +343,6 @@ async def handle_form_adicionar_creditos(
     desconto_percentual: Decimal = Form(...), valor_total_pago: Decimal = Form(...),
     metodo_pagamento: str = Form(...)
 ):
-    """
-    Processa e registra a venda de um pacote de créditos para um cliente.
-
-    Esta é uma rota crítica que executa uma transação financeira complexa,
-    garantindo a consistência dos dados em várias tabelas.
-
-    Suas responsabilidades são:
-
-    1. Validar o desconto oferecido comparado ao limite máximo configurado pelo administrador.
-    2. Atualizar o saldo de crédito na conta do cliente.
-    3. Criar um registro de 'Adição' no extrato de transações de crédito do cliente.
-    4. Criar um registro de 'Entrada' no fluxo de caixa geral do salão.
-
-    Todas estas operações são consolidadas num único commit para garantir a totalidade da transação.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        cliente_id (int): O ID do cliente que está a comprar o pacote.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do funcionário logado que está a realizar a venda.
-        servicos_selecionados (list[int]): Lista de IDs dos serviços incluídos no pacote.
-        quantidade_servicos (list[int]): Lista de quantidades para cada serviço correspondente.
-        desconto_percentual (Decimal): A porcentagem de desconto aplicada.
-        valor_total_pago (Decimal): O valor final pago pelo cliente após o desconto.
-        metodo_pagamento (str): A forma de pagamento utilizada.
-
-    Returns:
-        RedirectResponse: Redireciona o usuário de volta para a página de histórico do cliente,
-        onde o novo saldo e a transação serão visíveis.
-    """
-    # ... (código da função handle_form_adicionar_creditos)
     cliente = db.query(models.Cliente).filter(models.Cliente.id == cliente_id).first()
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
@@ -629,45 +375,19 @@ async def handle_form_adicionar_creditos(
     return RedirectResponse(url=f"/painel/clientes/{cliente_id}/historico", status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.get("/funcionarios/{funcionario_id}", response_class=HTMLResponse)
 async def get_detalhes_funcionario(
     request: Request, funcionario_id: int, db: Session = Depends(get_db),
     data: date = None, user: dict = Depends(get_current_user), error: str = None
 ):
-    """
-    Exibe a página da agenda diária para um funcionário específico.
-
-    Esta é a rota central da aplicação, responsável por agregar e preparar
-    uma grande quantidade de dados para a interface dinâmica da agenda.
-
-    Suas principais responsabilidades são:
-
-    1. Buscar o funcionário selecionado e uma lista de todos os outros funcionários ativos para permitir a navegação rápida entre agendas.
-    2. Consultar todos os agendamentos e bloqueios para o dia e funcionário especificados.
-    3. Separar os agendamentos em duas listas distintas: 'ativos' (para a agenda principal) e 'cancelados' (para a janela modal).
-    4. Combinar e ordenar os agendamentos ativos e os bloqueios para criar a visualização cronológica do dia.
-    5. Preparar a lista de serviços, agrupados por categoria, para o formulário de novo agendamento.
-    6. Calcular e anexar um prazo de edição dinâmico para cada agendamento.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        funcionario_id (int): O ID do funcionário cuja agenda deve ser exibida.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        data (date, optional): A data para a qual a agenda deve ser exibida. Assume o dia de hoje se não for fornecida.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-        error (str, optional): Uma mensagem de erro opcional a ser exibida (ex: conflito de horário).
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'funcionario_agenda.html',
-        populada com todos os dados processados para a interface.
-    """
-    # ... (código da função get_detalhes_funcionario)
     funcionario_selecionado = db.query(models.Funcionario).filter(models.Funcionario.id == funcionario_id).first()
     if not funcionario_selecionado:
         return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
     todos_funcionarios_ativos = db.query(models.Funcionario).filter(models.Funcionario.is_ativo == True).order_by(models.Funcionario.nome).all()
-    if data is None: data = date.today()
+    
+    # Substituído date.today() pela nova função centralizada
+    if data is None: data = obter_agora_local().date()
+    
     dia_anterior = data - timedelta(days=1)
     proximo_dia = data + timedelta(days=1)
     inicio_do_dia = datetime.combine(data, time.min)
@@ -711,6 +431,9 @@ async def get_detalhes_funcionario(
         categoria_nome = servico.categoria.nome if servico.categoria else "Outros"
         servicos_agrupados[categoria_nome].append(servico)
     horarios_selecao = [f"{h:02d}:{m:02d}" for h in range(8, 20) for m in range(0, 60, 30)]
+    
+    # Substituídos date.today() e datetime.now() pela nova função
+    agora_local = obter_agora_local()
     context = {
         "request": request, "funcionario": funcionario_selecionado,
         "todos_funcionarios_ativos": todos_funcionarios_ativos,
@@ -718,8 +441,8 @@ async def get_detalhes_funcionario(
         "data_exibida_str": data.strftime("%d/%m/%Y"), "data_atual_iso": data.isoformat(),
         "dia_anterior_str": dia_anterior.isoformat(), "proximo_dia_str": proximo_dia.isoformat(),
         "servicos_agrupados": servicos_agrupados, "servicos": servicos_ativos,
-        "horarios_selecao": horarios_selecao, "data_hoje_obj": date.today(),
-        "agora_local": datetime.now(), "user": user, "error": error
+        "horarios_selecao": horarios_selecao, "data_hoje_obj": agora_local.date(),
+        "agora_local": agora_local, "user": user, "error": error
     }
     return templates.TemplateResponse("funcionario_agenda.html", context)
 
@@ -731,36 +454,6 @@ async def handle_form_agendamento(
     data_agendamento: date = Form(...), hora_agendamento: time = Form(...),
     servico_id: int = Form(...), duracao_efetiva: int = Form(...)
 ):
-    """
-    Processa os dados do formulário para criar um novo agendamento.
-
-    Esta rota POST é o motor central do sistema. Suas responsabilidades são:
-
-    1.  **Gestão de Clientes "Find-or-Create":** Procura um cliente pelo número
-        de WhatsApp. Se o cliente não existir, cria um novo registro de
-        cliente automaticamente, otimizando o fluxo de trabalho.
-    2.  **Validação de Conflitos:** Realiza uma verificação rigorosa para garantir
-        que o novo agendamento não se sobreponha a agendamentos ou bloqueios
-        de tempo já existentes na agenda do funcionário.
-    3.  **Criação do Agendamento:** Se não houver conflitos, cria o novo registro de agendamento no banco de dados.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        funcionario_id (int): O ID do funcionário para o qual o agendamento está a ser criado.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado.
-        nome_cliente (str): O nome do cliente, vindo do formulário.
-        whatsapp_cliente (str): O WhatsApp do cliente, vindo do formulário.
-        data_agendamento (date): A data do agendamento, vinda do formulário.
-        hora_agendamento (time): A hora do agendamento, vinda do formulário.
-        servico_id (int): O ID do serviço selecionado.
-        duracao_efetiva (int): A duração em minutos do serviço.
-
-    Returns:
-        RedirectResponse: Em caso de sucesso, redireciona para a página da agenda do funcionário, mostrando o dia do novo agendamento.
-        Coroutine[TemplateResponse]: Em caso de conflito de horário, re-renderiza a página da agenda com uma mensagem de erro.
-    """
-    # ... (código da função handle_form_agendamento)
     whatsapp_numeros = "".join(filter(str.isdigit, whatsapp_cliente))
     cliente = db.query(models.Cliente).filter(models.Cliente.whatsapp == whatsapp_numeros).first()
     if not cliente:
@@ -796,40 +489,12 @@ async def handle_form_agendamento(
                             status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.post("/funcionarios/{funcionario_id}/bloquear")
 async def handle_form_bloqueio(
     request: Request, funcionario_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user),
     inicio_data: date = Form(...), inicio_hora: time = Form(...),
     fim_data: date = Form(...), fim_hora: time = Form(...), motivo: str = Form(None)
 ):
-    """
-    Processa os dados do formulário para criar um bloqueio de tempo na agenda.
-
-    Esta rota POST é responsável por criar um período de indisponibilidade na
-    agenda de um funcionário. Antes de criar o bloqueio, ela realiza duas
-    validações críticas:
-
-    1. Garante que o horário de término seja posterior ao de início.
-    2. Realiza uma verificação de conflitos, garantindo que o novo bloqueio
-       não se sobreponha a agendamentos ou outros bloqueios já existentes.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        funcionario_id (int): O ID do funcionário cuja agenda será bloqueada.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado.
-        inicio_data (date): A data de início do bloqueio.
-        inicio_hora (time): A hora de início do bloqueio.
-        fim_data (date): A data de término do bloqueio.
-        fim_hora (time): A hora de término do bloqueio.
-        motivo (str, optional): Uma descrição opcional para o motivo do bloqueio.
-
-    Returns:
-        RedirectResponse: Em caso de sucesso, redireciona para a página da agenda do funcionário, mostrando o dia do novo bloqueio.
-        Coroutine[TemplateResponse]: Em caso de conflito ou horário inválido, re-renderiza a página da agenda com uma mensagem de erro.
-    """
-    # ... (código da função handle_form_bloqueio)
     inicio_completo = datetime.combine(inicio_data, inicio_hora)
     fim_completo = datetime.combine(fim_data, fim_hora)
     if fim_completo <= inicio_completo:
@@ -865,36 +530,6 @@ async def finalizar_agendamento(
     metodo_pagamento: str = Form(...),
     valor_final_pago: Optional[Decimal] = Form(None)
 ):
-    """
-    Processa a finalização de um agendamento, registrando o pagamento.
-
-    Esta é uma rota financeira crítica que lida com a conclusão de um serviço.
-    A sua lógica principal é condicional, baseada no método de pagamento:
-
-    1.  **Se o pagamento for "Permuta"**:
-        -   O Fluxo de Caixa NÃO é afetado.
-        -   Calcula a comissão do salão e debita da Conta Corrente do funcionário.
-    2.  **Se o pagamento for "Credito em Conta"**:
-        -   O Fluxo de Caixa NÃO é afetado.
-        -   Verifica se o cliente tem saldo suficiente e debita o valor do seu saldo de créditos.
-        -   Regista a transação no extrato de créditos do cliente.
-    3.  **Para todos os outros métodos (PIX, Dinheiro, etc.)**:
-        -   Registra uma 'Entrada' normal no Fluxo de Caixa com o valor exato informado no formulário.
-
-    Em todos os casos, o status do agendamento é alterado para "Concluído" e um log de alteração é gerado.
-
-    Args:
-        agendamento_id (int): O ID do agendamento que está a ser finalizado.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado que está realizando a ação.
-        metodo_pagamento (str): A forma de pagamento selecionada na janela modal.
-        valor_final_pago (Optional[Decimal]): O valor exato pago pelo cliente,
-        enviado pelo formulário para pagamentos monetários.
-
-    Returns:
-        RedirectResponse: Redireciona o usuário de volta para a página da agenda do funcionário,
-        mostrando o dia do agendamento finalizado.
-    """
     db_agendamento = db.query(models.Agendamento).options(
         joinedload(models.Agendamento.servico),
         joinedload(models.Agendamento.cliente),
@@ -904,14 +539,14 @@ async def finalizar_agendamento(
     if not db_agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
 
-    sao_paulo_tz = pytz.timezone('America/Sao_Paulo')
-    agora_local_aware = datetime.now(sao_paulo_tz)
-    data_agendamento_aware = sao_paulo_tz.localize(db_agendamento.data_hora)
-
-    if data_agendamento_aware > agora_local_aware:
+    # Substituído datetime.now(sao_paulo_tz) pela nova função. 
+    # Assumindo que obter_agora_local() já retorna um objeto aware compatível com o DB.
+    agora_local_aware = obter_agora_local()
+    
+    # Fazemos a comparação de datas (Naive vs Aware deve ser tratada pela função ou DB)
+    if db_agendamento.data_hora > agora_local_aware.replace(tzinfo=None):
         raise HTTPException(status_code=403, detail="Não é possível finalizar um agendamento futuro.")
 
-    # A lógica de negócio só é executada se o agendamento ainda não estiver concluído.
     if db_agendamento.status != models.StatusAgendamento.CONCLUIDO:
         log_status = models.LogAlteracao(
             agendamento_id=agendamento_id, funcionario_id=user.id,
@@ -946,7 +581,7 @@ async def finalizar_agendamento(
                 )
             db.add(nova_transacao_credito)
 
-        else:  # Para PIX, Dinheiro, Cartão, etc.
+        else:
             valor_a_registrar = valor_final_pago if valor_final_pago is not None else db_agendamento.preco_final
             novo_registro_caixa = models.FluxoCaixa(
                 descricao=f"Serviço: {db_agendamento.servico.nome} - Cliente: {db_agendamento.cliente.nome}",
@@ -966,37 +601,18 @@ async def finalizar_agendamento(
                             status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.post("/agendamentos/{agendamento_id}/cancelar")
 async def cancelar_agendamento(
     agendamento_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)
 ):
-    """
-    Processa o cancelamento de um agendamento existente.
-
-    Esta rota altera o status de um agendamento para "Cancelado". Para garantir
-    a integridade dos dados históricos, ela implementa uma regra de negócio que
-    impede o cancelamento de agendamentos de dias anteriores.
-
-    A função também garante a auditoria, criando um registro em 'LogAlteracao'
-    para documentar a ação de cancelamento, além de ser idempotente, ou seja, não
-    realiza nenhuma alteração se o agendamento já estiver cancelado.
-
-    Args:
-        agendamento_id (int): O ID do agendamento a ser cancelado.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado que está realizando a ação.
-
-    Returns:
-        RedirectResponse: Redireciona o usuário de volta para a página da agenda do funcionário,
-        mostrando o dia do agendamento cancelado.
-    """
-    # ... (código da função cancelar_agendamento)
     db_agendamento = db.query(models.Agendamento).filter(models.Agendamento.id == agendamento_id).first()
     if not db_agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
-    if db_agendamento.data_hora.date() < date.today():
+    
+    # Substituído date.today() pela nova função
+    if db_agendamento.data_hora.date() < obter_agora_local().date():
         raise HTTPException(status_code=403, detail="Não é possível cancelar agendamentos de dias anteriores.")
+    
     if db_agendamento.status != models.StatusAgendamento.CANCELADO:
         log_cancelamento = models.LogAlteracao(
             agendamento_id=agendamento_id, funcionario_id=user.id,
@@ -1011,30 +627,10 @@ async def cancelar_agendamento(
                             status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.get("/agendamentos/{agendamento_id}/editar", response_class=HTMLResponse)
 async def get_pagina_editar_agendamento(
     request: Request, agendamento_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)
 ):
-    """
-    Exibe a página para editar o preço final de um agendamento.
-
-    Esta rota GET busca um agendamento específico pelo seu ID e renderiza o
-    formulário de edição. Os dados do agendamento são pré-carregados no formulário,
-    permitindo que o usuário altere o seu preço final. A consulta utiliza
-    'eager loading' (joinedload) para carregar os dados do cliente e do serviço de forma eficiente.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        agendamento_id (int): O ID do agendamento a ser editado, vindo da URL.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado, obtidos da sessão.
-
-    Returns:
-        TemplateResponse: Uma resposta HTML que renderiza a página 'editar_agendamento.html',
-        populada com os dados do agendamento a ser editado.
-    """
-    # ... (código da função get_pagina_editar_agendamento)
     agendamento = db.query(models.Agendamento).options(
         joinedload(models.Agendamento.cliente),
         joinedload(models.Agendamento.servico)
@@ -1045,60 +641,38 @@ async def get_pagina_editar_agendamento(
     return templates.TemplateResponse("editar_agendamento.html", context)
 
 
-
 @router.post("/agendamentos/{agendamento_id}/editar")
 async def handle_form_editar_agendamento(
     request: Request, agendamento_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user),
     preco_final: Decimal = Form(...)
 ):
-    """
-    Processa a alteração do preço final de um agendamento.
-
-    Esta rota POST é responsável por salvar o novo preço final de um agendamento.
-    Ela implementa várias regras de negócio críticas para garantir a integridade
-    dos dados financeiros e operacionais:
-
-    1.  Valida o prazo da edição, permitindo alterações apenas até 1 hora após o término do serviço.
-    2.  Verifica se o agendamento ainda está no status 'Agendado'.
-    3.  Garante que o novo preço não seja inferior ao preço mínimo do serviço.
-
-    Se a alteração for válida e o preço for de fato diferente, um registro de
-    auditoria ('LogAlteracao') é criado antes de a alteração ser salva.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        agendamento_id (int): O ID do agendamento a ser editado.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado que está realizando a ação.
-        preco_final (Decimal): O novo preço final do serviço, vindo do formulário.
-
-    Returns:
-        RedirectResponse: Em caso de sucesso, redireciona para a página da agenda.
-        TemplateResponse: Em caso de falha em qualquer uma das validações, re-renderiza a página de edição,
-        com uma mensagem de erro apropriada.
-    """
-    # ... (código da função handle_form_editar_agendamento)
     db_agendamento = db.query(models.Agendamento).options(
         joinedload(models.Agendamento.servico),
         joinedload(models.Agendamento.cliente)
     ).filter(models.Agendamento.id == agendamento_id).first()
     if not db_agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    
     horario_termino_agendamento = db_agendamento.data_hora + timedelta(minutes=db_agendamento.duracao_efetiva_minutos)
     prazo_limite_edicao = horario_termino_agendamento + timedelta(hours=1)
-    if datetime.now() > prazo_limite_edicao:
+    
+    # Substituído datetime.now() pela nova função
+    if obter_agora_local().replace(tzinfo=None) > prazo_limite_edicao:
         error_message = "O prazo para editar este agendamento expirou (1 hora após o término do serviço)."
         context = {"request": request, "agendamento": db_agendamento, "error": error_message, "user": user}
         return templates.TemplateResponse("editar_agendamento.html", context)
+    
     if db_agendamento.status != 'Agendado':
         error_message = f"Não é possível editar um agendamento com status '{db_agendamento.status}'."
         context = {"request": request, "agendamento": db_agendamento, "error": error_message, "user": user}
         return templates.TemplateResponse("editar_agendamento.html", context)
+    
     preco_minimo_servico = db_agendamento.servico.preco_minimo
     if preco_final < preco_minimo_servico:
         error_message = f"O preço final não pode ser menor que o preço mínimo do serviço (R$ {preco_minimo_servico})."
         context = {"request": request, "agendamento": db_agendamento, "error": error_message, "user": user}
         return templates.TemplateResponse("editar_agendamento.html", context)
+    
     if db_agendamento.preco_final != preco_final:
         valor_antigo = str(db_agendamento.preco_final)
         novo_log = models.LogAlteracao(
@@ -1114,32 +688,10 @@ async def handle_form_editar_agendamento(
                             status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.post("/bloqueios/{bloqueio_id}/cancelar")
 async def cancelar_bloqueio(
     bloqueio_id: int, db: Session = Depends(get_db), user: dict = Depends(get_current_user)
 ):
-    """
-    Processa a remoção (cancelamento) de um bloqueio de tempo na agenda.
-
-    Esta rota POST é responsável por excluir permanentemente um registro de
-    'Bloqueio' do banco de dados. Diferente do cancelamento de agendamentos,
-    que apenas altera um status para preservar o histórico, esta operação é
-    uma exclusão definitiva.
-
-    A função garante que, após a remoção, o usuário seja redirecionado de volta
-    para a visualização correta da agenda do dia em que o bloqueio existia.
-
-    Args:
-        bloqueio_id (int): O ID do bloqueio a ser removido, vindo da URL.
-        db (Session): A sessão do banco de dados, injetada como dependência.
-        user (dict): Os dados do usuário logado que está realizando a ação.
-
-    Returns:
-        RedirectResponse: Redireciona o usuário de volta para a página da agenda do funcionário,
-        mostrando o dia do bloqueio removido.
-    """
-    # ... (código da função cancelar_bloqueio)
     db_bloqueio = db.query(models.Bloqueio).filter(models.Bloqueio.id == bloqueio_id).first()
     if not db_bloqueio:
         raise HTTPException(status_code=404, detail="Bloqueio não encontrado")
@@ -1151,7 +703,6 @@ async def cancelar_bloqueio(
                             status_code=status.HTTP_303_SEE_OTHER)
 
 
-
 @router.get("/alterar-senha", response_class=HTMLResponse)
 async def get_pagina_alterar_senha(
     request: Request,
@@ -1159,18 +710,6 @@ async def get_pagina_alterar_senha(
     success: str | None = Query(default=None),
     error: str | None = Query(default=None)
 ):
-    """
-    Exibe a página com o formulário para o usuário alterar a sua própria senha.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        user (dict): Os dados do usuário logado.
-        success (str, optional): Mensagem de sucesso a ser exibida.
-        error (str, optional): Mensagem de erro a ser exibida.
-
-    Returns:
-        TemplateResponse: Renderiza a página 'alterar_senha.html'.
-    """
     context = {
         "request": request,
         "user": user,
@@ -1178,7 +717,6 @@ async def get_pagina_alterar_senha(
         "error": error
     }
     return templates.TemplateResponse("alterar_senha.html", context)
-
 
 
 @router.post("/alterar-senha")
@@ -1190,28 +728,6 @@ async def handle_form_alterar_senha(
     nova_senha: str = Form(...),
     confirmar_nova_senha: str = Form(...)
 ):
-    """
-    Processa a alteração de senha do usuário logado.
-
-    Realiza uma série de validações de segurança:
-    1. Verifica se a nova senha e a sua confirmação são idênticas.
-    2. Verifica se a "senha atual" fornecida corresponde à senha armazenada no banco de dados.
-
-    Se as validações passarem, a nova senha é 'hasheada' e atualizada no banco.
-
-    Args:
-        request (Request): O objeto de requisição do FastAPI.
-        db (Session): A sessão do banco de dados.
-        user (dict): Os dados do usuário logado.
-        senha_atual (str): A senha atual do usuário, para verificação.
-        nova_senha (str): A nova senha desejada.
-        confirmar_nova_senha (str): A confirmação da nova senha.
-
-    Returns:
-        RedirectResponse: Redireciona de volta para a página de alterar senha
-                          com uma mensagem de sucesso ou erro.
-    """
-    # Validação do frontend já verifica isto, mas é uma boa prática re-validar no backend.
     if nova_senha != confirmar_nova_senha:
         return RedirectResponse(
             url="/painel/alterar-senha?error=A nova senha e a confirmação não coincidem.",
@@ -1219,15 +735,12 @@ async def handle_form_alterar_senha(
         )
 
     db_funcionario = db.query(models.Funcionario).filter(models.Funcionario.id == user.id).first()
-
-    # Validação de segurança crucial: verificar se a senha atual está correta
     if not verificar_senha(senha_atual, db_funcionario.senha_hash):
         return RedirectResponse(
             url="/painel/alterar-senha?error=A senha atual está incorreta.",
             status_code=status.HTTP_303_SEE_OTHER
         )
 
-    # Se tudo estiver correto, atualiza a senha
     novo_hash_senha = gerar_hash_senha(nova_senha)
     db_funcionario.senha_hash = novo_hash_senha
     db.commit()
@@ -1238,35 +751,10 @@ async def handle_form_alterar_senha(
     )
 
 
-
 @router.get("/logs", response_class=HTMLResponse)
 async def get_pagina_logs(
     request: Request, db: Session = Depends(get_db), user: dict = Depends(get_current_user)
 ):
-    """
-       Exibe a página de auditoria com o histórico de todas as alterações.
-
-       Esta rota é responsável por fornecer uma visão completa e transparente de
-       todas as alterações significativas registadas no sistema. A sua principal
-       tarefa é realizar uma consulta complexa e eficiente para agregar todos os
-       dados necessários:
-
-       1.  Busca todos os registros de 'LogAlteracao'.
-       2.  Utiliza 'eager loading' (joinedload) de forma aninhada para carregar
-           eficientemente os dados do funcionário que fez a alteração do
-           agendamento afetado, e também do serviço e cliente relacionados
-           a esse agendamento.
-       3.  Realiza um ajuste de fuso horário para exibir a hora local.
-
-       Args:
-           request (Request): O objeto de requisição do FastAPI.
-           db (Session): A sessão do banco de dados, injetada como dependência.
-           user (dict): Os dados do usuário logado, obtidos da sessão.
-
-       Returns:
-           TemplateResponse: Uma resposta HTML que renderiza a página 'logs.html',
-           populada com a lista completa de registros de auditoria.
-       """
     logs = db.query(models.LogAlteracao).options(
         joinedload(models.LogAlteracao.funcionario),
         joinedload(models.LogAlteracao.agendamento).joinedload(models.Agendamento.servico),
@@ -1274,7 +762,10 @@ async def get_pagina_logs(
     ).order_by(models.LogAlteracao.data_hora.desc()).all()
 
     for log in logs:
-        log.data_hora_local = log.data_hora - timedelta(hours=3)
+        # Removido o ajuste manual de fuso horário (timedelta(hours=3)) 
+        # pois a função centralizada agora cuida disso.
+        log.data_hora_local = log.data_hora 
+        
         campo = log.campo_alterado
         valor_novo = log.valor_novo
 
@@ -1289,9 +780,7 @@ async def get_pagina_logs(
         elif campo == "duracao_efetiva_minutos":
             log.acao_amigavel = "Ajustou Duração"
         else:
-            # Um valor padrão para campos não mapeados, para não quebrar a visualização
             log.acao_amigavel = f"Alterou '{campo.replace('_', ' ').title()}'"
 
     context = {"request": request, "logs": logs, "user": user}
     return templates.TemplateResponse("logs.html", context)
-
