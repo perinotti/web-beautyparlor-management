@@ -28,6 +28,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(Path(BASE_DIR, 'templates')))
 
 
+def obter_fechamento_caixa_por_data(db: Session, data_referencia: date) -> models.FechamentoCaixa | None:
+    return db.query(models.FechamentoCaixa).options(
+        joinedload(models.FechamentoCaixa.funcionario)
+    ).filter(
+        models.FechamentoCaixa.data_fechamento == data_referencia
+    ).first()
+
+
 ######################################## PÁGINA DE ADMINISTRAÇÃO ########################################
 
 
@@ -190,6 +198,7 @@ async def get_pagina_fluxo_caixa(
 
     registros_caixa = query_caixa.order_by(models.FluxoCaixa.data_hora_registro.asc()).all()
     funcionario_selecionado = next((f for f in funcionarios if f.id == funcionario_id), None)
+    fechamento_caixa = obter_fechamento_caixa_por_data(db, data_filtro)
 
     total_entradas = sum(r.valor for r in registros_caixa if r.tipo == 'Entrada')
     total_saidas = sum(r.valor for r in registros_caixa if r.tipo == 'Saída')
@@ -201,7 +210,9 @@ async def get_pagina_fluxo_caixa(
         "data_exibida_str": data_filtro.strftime("%d/%m/%Y"),
         "total_entradas": total_entradas, "total_saidas": total_saidas,
         "saldo_do_dia": saldo_do_dia, "funcionarios": funcionarios,
-        "funcionario_id_filtro": funcionario_id, "funcionario_selecionado": funcionario_selecionado
+        "funcionario_id_filtro": funcionario_id, "funcionario_selecionado": funcionario_selecionado,
+        "fechamento_caixa": fechamento_caixa,
+        "permite_fechar_caixa": funcionario_id is None
     }
     return templates.TemplateResponse("admin_fluxo_caixa.html", context)
 
@@ -210,7 +221,7 @@ async def get_pagina_fluxo_caixa(
 @router.post("/fluxo-caixa/registrar-saida")
 async def handle_form_registrar_saida(
     db: Session = Depends(get_db), user: dict = Depends(get_current_admin_user),
-    descricao: str = Form(...), valor: Decimal = Form(...)
+    descricao: str = Form(...), valor: Decimal = Form(...), data_filtro: date = Form(...)
 ):
     """
     Processa o registro de uma saída de caixa manual.
@@ -231,6 +242,9 @@ async def handle_form_registrar_saida(
                           fluxo de caixa, atualizada para o dia de hoje.
     """
     # ... (código da função handle_form_registrar_saida)
+    if obter_fechamento_caixa_por_data(db, data_filtro):
+        raise HTTPException(status_code=403, detail="O caixa desta data já foi fechado e não aceita novas saídas.")
+
     nova_saida = models.FluxoCaixa(
         descricao=descricao, valor=valor, tipo=models.TipoFluxoCaixa.SAIDA,
         funcionario_id=user.id, agendamento_id=None
@@ -238,7 +252,41 @@ async def handle_form_registrar_saida(
     db.add(nova_saida)
     db.commit()
     return RedirectResponse(
-        url=f"/painel/admin/fluxo-caixa?data_filtro={date.today().isoformat()}",
+        url=f"/painel/admin/fluxo-caixa?data_filtro={data_filtro.isoformat()}",
+        status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post("/fluxo-caixa/fechar")
+async def handle_form_fechar_caixa(
+    db: Session = Depends(get_db),
+    user: dict = Depends(get_current_admin_user),
+    data_filtro: date = Form(...)
+):
+    if data_filtro > date.today():
+        raise HTTPException(status_code=403, detail="Não é possível fechar o caixa de uma data futura.")
+
+    if obter_fechamento_caixa_por_data(db, data_filtro):
+        raise HTTPException(status_code=409, detail="O caixa desta data já foi fechado.")
+
+    inicio_do_dia = datetime.combine(data_filtro, time.min)
+    fim_do_dia = datetime.combine(data_filtro, time.max)
+    registros_caixa = db.query(models.FluxoCaixa).filter(
+        models.FluxoCaixa.data_hora_registro.between(inicio_do_dia, fim_do_dia)
+    ).all()
+
+    total_entradas = sum(r.valor for r in registros_caixa if r.tipo == models.TipoFluxoCaixa.ENTRADA)
+    total_saidas = sum(r.valor for r in registros_caixa if r.tipo == models.TipoFluxoCaixa.SAIDA)
+
+    fechamento = models.FechamentoCaixa(
+        data_fechamento=data_filtro,
+        saldo_final=total_entradas - total_saidas,
+        funcionario_id=user.id
+    )
+    db.add(fechamento)
+    db.commit()
+    return RedirectResponse(
+        url=f"/painel/admin/fluxo-caixa?data_filtro={data_filtro.isoformat()}",
         status_code=status.HTTP_303_SEE_OTHER
     )
 

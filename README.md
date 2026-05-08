@@ -147,7 +147,12 @@ Abra o arquivo `.env` e preencha com suas credenciais:
 ```env
 DATABASE_URL=postgresql://fastapi_user:sua_senha_aqui@localhost/beauty_parlor
 SECRET_KEY=uma_chave_secreta_longa_e_aleatoria_aqui
+SESSION_MAX_AGE_SECONDS=36000
+SESSION_HTTPS_ONLY=false
 ```
+
+- `SESSION_MAX_AGE_SECONDS`: tempo máximo da sessão em segundos. O padrão atual é `36000` (10 horas).
+- `SESSION_HTTPS_ONLY`: defina como `true` quando o ambiente de produção já estiver servido via HTTPS.
 
 > Para gerar uma SECRET_KEY segura, você pode usar:
 > ```bash

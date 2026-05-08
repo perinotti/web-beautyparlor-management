@@ -26,6 +26,10 @@ from dependencies import NotAuthenticatedException
 load_dotenv()
 
 
+SESSION_MAX_AGE_SECONDS = int(os.getenv("SESSION_MAX_AGE_SECONDS", "36000"))
+SESSION_HTTPS_ONLY = os.getenv("SESSION_HTTPS_ONLY", "false").lower() == "true"
+
+
 # Cria a instância principal da aplicação FastAPI, com metadados para documentação.
 app = FastAPI(
     title="API do Salão de Beleza",
@@ -43,8 +47,8 @@ app.add_middleware(
     secret_key=os.getenv("SECRET_KEY"),
     session_cookie="beauty_parlor_session",
     same_site="lax",
-    https_only=False,  # Alterar para True quando HTTPS estiver ativo em produção
-    max_age=36000  # Sessão expira após 10 horas
+    https_only=SESSION_HTTPS_ONLY,
+    max_age=SESSION_MAX_AGE_SECONDS
 )
 
 @app.exception_handler(NotAuthenticatedException)

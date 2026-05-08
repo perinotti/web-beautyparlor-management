@@ -1,6 +1,6 @@
 import enum
 from sqlalchemy import Enum 
-from sqlalchemy import Column, Integer, String, Boolean, Numeric, DateTime, ForeignKey, func
+from sqlalchemy import Column, Integer, String, Boolean, Numeric, DateTime, Date, ForeignKey, func
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime
@@ -139,6 +139,7 @@ class Funcionario(Base):
         foreign_keys="[TransacaoContaCorrente.funcionario_id]",
         order_by="desc(TransacaoContaCorrente.data_hora)"
     )
+    fechamentos_caixa = relationship("FechamentoCaixa", back_populates="funcionario")
 
 
 
@@ -406,6 +407,25 @@ class FluxoCaixa(Base):
     quantidade = Column(Integer, server_default='1', nullable=True)
     comissao_percentual = Column(Numeric(5, 2), nullable=True)
     produto = relationship("Produto", back_populates="vendas")
+
+
+class FechamentoCaixa(Base):
+    """
+    Representa o fechamento formal do caixa de um dia específico.
+
+    O registro desta tabela serve como marco oficial de que o movimento
+    financeiro daquele dia foi conferido e encerrado. A partir dele, o sistema
+    pode bloquear alterações tardias em agendamentos vinculados à mesma data.
+    """
+    __tablename__ = "fechamentos_caixa"
+
+    id = Column(Integer, primary_key=True, index=True)
+    data_fechamento = Column(Date, nullable=False, unique=True, index=True)
+    saldo_final = Column(Numeric(10, 2), nullable=False)
+    data_hora_fechamento = Column(DateTime, default=datetime.now, nullable=False)
+    funcionario_id = Column(Integer, ForeignKey("funcionarios.id"), nullable=False)
+
+    funcionario = relationship("Funcionario", back_populates="fechamentos_caixa")
 
 
 class Produto(Base):
