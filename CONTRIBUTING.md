@@ -1,75 +1,49 @@
-**Cada integrante do grupo é responsável por um commit específico, mapeado no Plano de Ação. Este guia descreve o fluxo completo: desde preparar o ambiente local até ter o código aceito no repositório oficial.**
+# Guia de Contribuição — Web Beauty Parlor Management
+
+## Visão Geral
+
+Cada integrante do grupo é responsável por um commit específico, mapeado no Plano de Ação. Este guia descreve o fluxo completo: desde preparar o ambiente local até ter o código aceito no repositório oficial.
 
 ---
 
-# Para todos os contribuidores
+## Branches principais
 
-## Passo 0: Preparação Inicial (Apenas na primeira vez)
+| Branch | Propósito |
+|---|---|
+| `master` | Código estável, aprovado e testado. Nunca recebe commits diretos. |
+| `develop` | Branch de integração. Todos os PRs devem ser abertos para cá. |
 
-Antes de escrever qualquer código, você precisa trazer o projeto para a sua máquina e configurar o ambiente.
-
-**1. Fazer o Fork no GitHub**
-Acesse `https://github.com/perinotti/web-beautyparlor-management`. Clique no botão **Fork** no canto superior direito para criar uma cópia do projeto sob o seu próprio usuário.
-
-**2. Clonar o seu Fork**
-No terminal, baixe o seu repositório para a sua máquina (substitua `SEU_USUARIO` pelo seu usuário do GitHub):
-
-```r
-git clone https://github.com/SEU_USUARIO/web-beautyparlor-management.git
+O fluxo correto é:
+```
+branch pessoal → PR para develop → revisão e testes → merge em develop
+                                                              ↓
+                                          (quando fase inteira estiver estável)
+                                                              ↓
+                                                   PR de develop para master
 ```
 
-**3. Entrar na pasta e abrir a IDE**
+---
 
-Navegue até a pasta que acabou de ser criada e abra seu editor de código (como VSCodium ou VS Code):
+## Para todos os contribuidores
 
-```r
-cd web-beautyparlor-management
-codium .   # ou use 'code .' se estiver utilizando o VS Code padrão
-```
+### 1. Preparar o ambiente antes de começar
 
-**4. Criar e ativar o ambiente virtual (venv)**
-
-Crie o ambiente isolado do Python para não conflitar com outras bibliotecas do seu computador:
-
-```r
-python -m venv venv
-```
-
-Ative o ambiente virtual usando o comando correspondente ao seu sistema operacional:
-
-| Sistema Operacional | Comando no Terminal |
-| --- | --- |
-| **Linux / macOS** | `source venv/bin/activate` |
-| **Windows** | `venv\Scripts\activate` |
-
-**5. Instalar as dependências**
-
-Com o ambiente ativado, instale as bibliotecas necessárias para o projeto rodar:
-
-```r
-pip install -r requirements.txt
-```
-
-## Passo 1: Conectar ao repositório principal
-
-Garanta que sua cópia local consegue enxergar e baixar as atualizações feitas por outros desenvolvedores no repositório principal.
-
-**Adicionar o "upstream" (fazer apenas uma vez):**
+Antes de escrever qualquer linha de código, garanta que sua cópia local está atualizada com o repositório principal.
 
 ```bash
 # Adicionar o repositório principal como "upstream" (fazer apenas uma vez)
 git remote add upstream https://github.com/perinotti/web-beautyparlor-management.git
 
-# Sempre que for começar um trabalho novo, atualize sua master local
-git checkout master
-git pull upstream master
+# Sempre que for começar um trabalho novo, atualize sua develop local
+git checkout develop
+git pull upstream develop
 ```
 
 ---
 
-## Passo 2. Criar uma branch para o seu trabalho
+### 2. Criar uma branch para o seu trabalho
 
-Nunca trabalhe diretamente na branch `master`. Crie uma branch com um nome descritivo que identifique o commit que você está fazendo.
+Nunca trabalhe diretamente na branch `develop` ou `master`. Crie uma branch com um nome descritivo que identifique o commit que você está fazendo.
 
 O padrão de nome é: `tipo/descricao-curta`
 
@@ -83,30 +57,30 @@ git checkout -b fix/status-http-401-login          # Commit 4
 
 ---
 
-## Passo 3: Fazer as alterações e testar
+### 3. Fazer as alterações
 
-Faça apenas as alterações descritas no seu commit. Não aproveite para corrigir outras coisas — isso dificulta a revisão e mistura responsabilidades no histórico.
+- Faça apenas as alterações descritas no seu commit. Não aproveite para corrigir outras coisas — isso dificulta a revisão e mistura responsabilidades no histórico.
+- Teste localmente antes de enviar:
 
-Se você fechou o terminal desde o Passo 0, lembre-se de reativar o ambiente virtual antes de testar:
+```bash
+# Ativar o ambiente virtual
+# Linux/macOS:
+source venv/bin/activate
 
-| Sistema Operacional | Comando no Terminal |
-| --- | --- |
-| **Linux / macOS** | `source venv/bin/activate` |
-| **Windows** | `venv\Scripts\activate` |
+# Windows:
+venv\Scripts\activate
 
-Com o ambiente ativado, rode o servidor localmente para testar suas alterações:
-
-```r
-uvicorn master:app --reload
+# Rodar o servidor
+uvicorn main:app --reload
 ```
 
 Verifique se a aplicação sobe sem erros no terminal e se a funcionalidade que você alterou continua funcionando no navegador.
 
 ---
 
-### Passo 4. Fazer o commit
+### 4. Fazer o commit
 
-Use a mensagem de commit exatamente como definida no Plano de Ação. O padrão utilizado é o **Conventional Commits**, que facilita a leitura do histórico.
+Use a mensagem de commit exatamente como definida no Plano de Ação. O padrão utilizado é o **Conventional Commits**.
 
 ```bash
 # Adicionar apenas os arquivos que você alterou
@@ -120,7 +94,7 @@ Evite usar `git add .` — ele adiciona tudo indiscriminadamente e pode incluir 
 
 ---
 
-### Passo 5. Enviar para o GitHub
+### 5. Enviar para o GitHub
 
 ```bash
 # Enviar sua branch para o GitHub (origin = seu fork)
@@ -129,16 +103,17 @@ git push origin fix/imports-deprecados
 
 ---
 
-### Passo 6. Abrir um Pull Request (PR)
+### 6. Abrir um Pull Request (PR)
 
 1. Acesse seu repositório no GitHub
-2. Clique em **"Compare & pull request"** (aparece automaticamente após o push)
-3. Preencha o PR da seguinte forma:
+2. Clique em **"Compare & pull request"**
+3. **Atenção:** certifique-se de que o destino é a branch `develop` do repositório principal, não `master`
+4. Preencha o PR da seguinte forma:
 
 **Título:** igual à mensagem do commit
 `fix: corrige imports deprecados, relacionamento quebrado e import duplicado`
 
-**Descrição:** explique o que foi alterado e por quê. Use o seguinte template:
+**Descrição:** use o template abaixo:
 
 ```
 ## O que foi alterado
@@ -147,50 +122,97 @@ git push origin fix/imports-deprecados
 - routers/painel.py: removido import duplicado de `collections.defaultdict`
 
 ## Por que foi alterado
-Correções de qualidade identificadas no mapeamento inicial do projeto. O import deprecado gera avisos no SQLAlchemy moderno e pode quebrar em versões futuras. O `back_populates` faltante causava inconsistência silenciosa no ORM.
+Correções de qualidade identificadas no mapeamento inicial do projeto.
 
 ## Como testar
-1. Rodar `uvicorn master:app --reload`
+1. Rodar `uvicorn main:app --reload`
 2. Verificar que nenhum aviso de deprecação aparece no terminal ao iniciar
 3. Navegar pelo painel e verificar que produtos carregam normalmente
+
+## Migration necessária?
+[ ] Sim — rodar `alembic upgrade head` antes de testar
+[x] Não
 ```
 
-1. Selecione o repositório do dono (`perinotti/web-beautyparlor-management`) como destino
-2. Clique em **"Create pull request"**
+5. Clique em **"Create pull request"**
 
 ---
 
 ## Para o dono do repositório
 
-### Como revisar um Pull Request
+### Como testar um Pull Request antes de aceitar
 
-1. Acesse a aba **Pull Requests** no repositório
-2. Abra o PR enviado pelo colega
-3. Vá na aba **"Files changed"** para ver exatamente o que foi alterado
-4. Verifique:
-    - As alterações correspondem ao commit descrito no Plano de Ação?
-    - Nenhuma outra parte do código foi modificada sem necessidade?
-    - A mensagem do commit segue o padrão?
-5. Se estiver tudo certo, clique em **"Merge pull request"** → **"Confirm merge"**
-6. Se houver algo a corrigir, use a aba **"Review"** para deixar um comentário na linha específica e solicite alterações com **"Request changes"**
+**1. Buscar a branch do colega localmente:**
+```bash
+git fetch origin
+git checkout nome-da-branch-do-colega
+```
+
+**2. Atualizar o banco se houver migration nova:**
+```bash
+alembic upgrade head
+```
+
+**3. Rodar o servidor e testar:**
+```bash
+source venv/bin/activate  # ou venv\Scripts\activate no Windows
+uvicorn main:app --reload
+```
+
+Use o checklist do card do Trello como roteiro de teste — marque cada item enquanto verifica.
+
+**4. Se tiver problema:**
+Comente no PR do GitHub apontando o que encontrou, na aba **"Files changed"** você pode comentar diretamente na linha problemática. O colega corrige e faz push na mesma branch — o PR atualiza automaticamente.
+
+**5. Se estiver tudo certo:**
+Clique em **"Merge pull request"** → **"Confirm merge"** no GitHub.
+
+---
+
+### Checklist rápido antes de aceitar qualquer PR
+
+- [ ] As alterações correspondem ao commit descrito no Plano de Ação?
+- [ ] Nenhuma outra parte do código foi modificada sem necessidade?
+- [ ] A mensagem do commit segue o padrão?
+- [ ] O servidor sobe sem erros no terminal?
+- [ ] As páginas afetadas pelo commit funcionam sem erro 500?
+- [ ] Se teve migration, o `alembic upgrade head` rodou sem erro?
+- [ ] O `alembic current` mostra `(head)` depois?
+
+---
 
 ### Ordem recomendada para aceitar os PRs
 
 Respeite as dependências definidas no documento "Dependências Importantes":
 
-1. Mergear Commits 1, 2 e 3 antes de qualquer coisa da Fase 2
-2. Na Fase 2, mergear Commit 3 antes do Commit 6
-3. Nunca mergear Commits 5 e 6 ao mesmo tempo — um por vez
+**Fase 1** — Commits 1, 2 e 3 podem ser mergeados em qualquer ordem entre si.
 
-### Como atualizar o repositório local após um merge
+**Fase 2** — Mergear Commits 1, 2 e 3 antes de qualquer coisa da Fase 2. O Commit de magic strings depende do Commit de remoção do `create_all`. Os Commits de sessão e magic strings não devem ser mergeados ao mesmo tempo — um por vez.
+
+### Como promover develop para master (ao final de uma fase)
+
+Após todos os commits de uma fase estarem mergeados em `develop` e testados:
 
 ```bash
 git checkout master
 git pull upstream master
+git merge develop
+git push origin master
+```
+
+Ou pelo GitHub: abra um PR de `develop` para `master`.
+
+---
+
+### Como atualizar o repositório local após um merge
+
+```bash
+git checkout develop
+git pull upstream develop
 ```
 
 ---
 
 ## Resumo do fluxo em uma linha
 
-`Fork` → `Clone` → `pull upstream` → `nova branch` → `alterar` → `testar` → `commit` → `push` → `Pull Request` → `revisão` → `merge`
+`pull upstream develop` → `nova branch` → `alterar` → `testar` → `commit` → `push` → `Pull Request para develop` → `revisão` → `merge`
