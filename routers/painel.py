@@ -26,6 +26,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(Path(BASE_DIR, 'templates')))
 
 
+def set_flash_message(request: Request, mensagem: str):
+    request.session["flash_message"] = mensagem
+
+
+def get_flash_message(request: Request) -> str | None:
+    return request.session.pop("flash_message", None)
+
+
 @router.get("/", response_class=HTMLResponse)
 async def get_painel_gestao(request: Request, db: Session = Depends(get_db), user: dict = Depends(get_current_user)):
     """
@@ -663,6 +671,9 @@ async def get_detalhes_funcionario(
         populada com todos os dados processados para a interface.
     """
     # ... (código da função get_detalhes_funcionario)
+    flash_message = get_flash_message(request)
+    if not error and flash_message:
+        error = flash_message
     funcionario_selecionado = db.query(models.Funcionario).filter(models.Funcionario.id == funcionario_id).first()
     if not funcionario_selecionado:
         return templates.TemplateResponse("404.html", {"request": request}, status_code=404)
@@ -783,8 +794,8 @@ async def handle_form_agendamento(
         models.Bloqueio.fim > data_hora_completa
     ).all()
     if conflitos_agendamento or conflitos_bloqueio:
-        error_message = "Conflito de horário! O período selecionado já está ocupado."
-        return await get_detalhes_funcionario(request, funcionario_id, db, data_agendamento, user, error=error_message)
+        set_flash_message(request, "Conflito de horário! O período selecionado já está ocupado.")
+        return RedirectResponse(url=f"/painel/funcionarios/{funcionario_id}?data={data_agendamento.isoformat()}", status_code=status.HTTP_303_SEE_OTHER)
     novo_agendamento = models.Agendamento(
         cliente_id=cliente.id, data_hora=data_hora_completa, servico_id=servico_id,
         funcionario_id=funcionario_id, duracao_efetiva_minutos=duracao_efetiva,
@@ -833,8 +844,8 @@ async def handle_form_bloqueio(
     inicio_completo = datetime.combine(inicio_data, inicio_hora)
     fim_completo = datetime.combine(fim_data, fim_hora)
     if fim_completo <= inicio_completo:
-        error_message = "O horário de término do bloqueio deve ser posterior ao horário de início."
-        return await get_detalhes_funcionario(request, funcionario_id, db, inicio_data, user, error=error_message)
+        set_flash_message(request, "O horário de término do bloqueio deve ser posterior ao horário de início.")
+        return RedirectResponse(url=f"/painel/funcionarios/{funcionario_id}?data={inicio_data.isoformat()}", status_code=status.HTTP_303_SEE_OTHER)
     conflitos_agendamento = db.query(models.Agendamento).filter(
         models.Agendamento.funcionario_id == funcionario_id,
         models.Agendamento.data_hora < fim_completo,
@@ -846,8 +857,8 @@ async def handle_form_bloqueio(
         models.Bloqueio.fim > inicio_completo
     ).all()
     if conflitos_agendamento or conflitos_bloqueio:
-        error_message = "Conflito de horário! O período selecionado já está ocupado por um agendamento ou outro bloqueio."
-        return await get_detalhes_funcionario(request, funcionario_id, db, inicio_data, user, error=error_message)
+        set_flash_message(request, "Conflito de horário! O período selecionado já está ocupado por um agendamento ou outro bloqueio.")
+        return RedirectResponse(url=f"/painel/funcionarios/{funcionario_id}?data={inicio_data.isoformat()}", status_code=status.HTTP_303_SEE_OTHER)
     novo_bloqueio = models.Bloqueio(
         inicio=inicio_completo, fim=fim_completo, motivo=motivo, funcionario_id=funcionario_id
     )

@@ -31,8 +31,9 @@
         <div class="form-section">
             <h3>Novo Agendamento para <span class="text-primary">{{ funcionario.nome }}</span></h3>
             {% if error %}
-                <div class="alert alert-danger" role="alert">
+                <div class="alert alert-danger alert-dismissible fade show" role="alert">
                     {{ error }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Fechar"></button>
                 </div>
             {% endif %}
             <form action="/painel/funcionarios/{{ funcionario.id }}/agendar" method="post">

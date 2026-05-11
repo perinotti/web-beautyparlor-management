@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, Request, Form, Query, HTTPException, UploadFile, File
-import shutil
-import uuid
+from utils.arquivos import salvar_imagem_produto
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette import status
 from sqlalchemy.orm import Session, joinedload
@@ -1269,36 +1268,11 @@ async def handle_form_novo_produto(
 
     caminho_foto_final = None
     if foto and foto.filename:
-
-        # 1. Define as regras de validação
-        ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
-        MAX_FILE_SIZE_MB = 2
-        MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-
-        # 2. Valida a extensão do ficheiro
-        extensao = foto.filename.split(".")[-1].lower()
-        if extensao not in ALLOWED_EXTENSIONS:
-            error_msg = f"Formato de ficheiro não permitido. Use: {', '.join(ALLOWED_EXTENSIONS)}"
-            context = {"request": request, "user": user, "produto": None, "error": error_msg}
+        try:
+            caminho_foto_final = await salvar_imagem_produto(foto)
+        except ValueError as e:
+            context = {"request": request, "user": user, "produto": None, "error": str(e)}
             return templates.TemplateResponse("admin_produto_form.html", context, status_code=400)
-
-        # 3. Valida o tamanho do ficheiro
-        contents = await foto.read()
-        if len(contents) > MAX_FILE_SIZE_BYTES:
-            error_msg = f"O ficheiro é muito grande. O tamanho máximo é de {MAX_FILE_SIZE_MB} MB."
-            context = {"request": request, "user": user, "produto": None, "error": error_msg}
-            return templates.TemplateResponse("admin_produto_form.html", context, status_code=400)
-
-        # 4. Se a validação passar, prossegue para salvar o ficheiro
-        pasta_uploads = Path(BASE_DIR, "static", "uploads", "products")
-        pasta_uploads.mkdir(parents=True, exist_ok=True)
-
-        nome_ficheiro_unico = f"{uuid.uuid4()}.{extensao}"
-        caminho_foto_final = nome_ficheiro_unico
-        caminho_salvar = pasta_uploads / nome_ficheiro_unico
-
-        with open(caminho_salvar, "wb") as buffer:
-            buffer.write(contents)
 
     # Cria a nova instância do produto no banco de dados
     novo_produto = models.Produto(
@@ -1383,21 +1357,10 @@ async def handle_form_editar_produto(
         return templates.TemplateResponse("admin_produto_form.html", context, status_code=400)
 
     if foto and foto.filename:
-        ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
-        MAX_FILE_SIZE_MB = 2
-        MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024
-
-        extensao = foto.filename.split(".")[-1].lower()
-        # ### LINHA CORRIGIDA ###
-        if extensao not in ALLOWED_EXTENSIONS:
-            error_msg = f"Formato de ficheiro não permitido. Use: {', '.join(ALLOWED_EXTENSIONS)}"
-            context = {"request": request, "user": user, "produto": db_produto, "error": error_msg}
-            return templates.TemplateResponse("admin_produto_form.html", context, status_code=400)
-
-        contents = await foto.read()
-        if len(contents) > MAX_FILE_SIZE_BYTES:
-            error_msg = f"O ficheiro é muito grande. O tamanho máximo é de {MAX_FILE_SIZE_MB} MB."
-            context = {"request": request, "user": user, "produto": db_produto, "error": error_msg}
+        try:
+            nome_ficheiro_unico = await salvar_imagem_produto(foto)
+        except ValueError as e:
+            context = {"request": request, "user": user, "produto": db_produto, "error": str(e)}
             return templates.TemplateResponse("admin_produto_form.html", context, status_code=400)
 
         if db_produto.caminho_foto:
@@ -1405,11 +1368,6 @@ async def handle_form_editar_produto(
             if caminho_foto_antiga.is_file():
                 caminho_foto_antiga.unlink()
 
-        pasta_uploads = Path(BASE_DIR, "static", "uploads", "products")
-        nome_ficheiro_unico = f"{uuid.uuid4()}.{extensao}"
-        caminho_salvar = pasta_uploads / nome_ficheiro_unico
-        with open(caminho_salvar, "wb") as buffer:
-            buffer.write(contents)
         db_produto.caminho_foto = nome_ficheiro_unico
 
     db_produto.nome = nome
