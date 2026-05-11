@@ -48,13 +48,13 @@ shellingham>=1.5.4
 six>=1.17.0
 sniffio>=1.3.1
 SQLAlchemy>=2.0.42
-starlette>=0.47.2
+starlette>=0.47.2,<1.0.0
 typer>=0.16.0
 typing-inspection>=0.4.1
 typing_extensions>=4.14.1
 ujson>=5.10.0
 urllib3>=2.5.0
 uvicorn>=0.35.0
-uvloop>=0.21.0 sys_platform >= 'linux'
+uvloop>=0.21.0; sys_platform == 'linux'
 watchfiles>=1.1.0
 websockets>=15.0.1
