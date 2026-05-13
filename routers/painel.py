@@ -26,6 +26,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(Path(BASE_DIR, 'templates')))
 
 
+def data_esta_com_caixa_fechado(db: Session, data_referencia: date) -> bool:
+    return db.query(models.FechamentoCaixa.id).filter(
+        models.FechamentoCaixa.data_fechamento == data_referencia
+    ).first() is not None
 def set_flash_message(request: Request, mensagem: str):
     request.session["flash_message"] = mensagem
 
@@ -363,6 +367,16 @@ async def handle_form_vender_produto(
         models.Configuracao.chave == "COMISSAO_MAXIMA_PRODUTO"
     ).first()
     limite_comissao = Decimal(comissao_maxima_obj.valor) if comissao_maxima_obj else Decimal("10")
+    if data_esta_com_caixa_fechado(db, date.today()):
+        produtos_ativos = db.query(models.Produto).filter(models.Produto.is_ativo == True).order_by(
+            models.Produto.nome).all()
+        produtos_json = {p.id: {"nome": p.nome, "valor": float(p.valor)} for p in produtos_ativos}
+        context = {
+            "request": request, "user": user, "produtos": produtos_ativos, "produtos_json": produtos_json,
+            "comissao_maxima": limite_comissao,
+            "error": "O caixa de hoje já foi fechado. Não é possível registrar novas vendas de produtos."
+        }
+        return templates.TemplateResponse("vender_produto.html", context, status_code=403)
 
     # 2. Valida a comissão recebida do formulário
     comissao_a_registrar = comissao_percentual if comissao_percentual is not None else Decimal("0.00")
@@ -615,6 +629,11 @@ async def handle_form_adicionar_creditos(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Operação não permitida. O desconto máximo para pacotes é de {limite_maximo}%."
         )
+    if data_esta_com_caixa_fechado(db, date.today()):
+        raise HTTPException(
+            status_code=403,
+            detail="O caixa de hoje já foi fechado. Não é possível vender novos pacotes de crédito."
+        )
     descricao_pacote = "Pacote: "
     detalhes = []
     for servico_id, qtd in zip(servicos_selecionados, quantidade_servicos):
@@ -710,6 +729,7 @@ async def get_detalhes_funcionario(
         if item.tipo == 'agendamento':
             horario_termino = item.data_hora + timedelta(minutes=item.duracao_efetiva_minutos)
             item.prazo_edicao = horario_termino + timedelta(hours=1)
+    caixa_fechado_no_dia = data_esta_com_caixa_fechado(db, data)
     servicos_ativos = db.query(models.Servico).options(
         joinedload(models.Servico.categoria)
     ).filter(
@@ -730,7 +750,8 @@ async def get_detalhes_funcionario(
         "dia_anterior_str": dia_anterior.isoformat(), "proximo_dia_str": proximo_dia.isoformat(),
         "servicos_agrupados": servicos_agrupados, "servicos": servicos_ativos,
         "horarios_selecao": horarios_selecao, "data_hoje_obj": date.today(),
-        "agora_local": datetime.now(), "user": user, "error": error
+        "agora_local": datetime.now(), "user": user, "error": error,
+        "caixa_fechado_no_dia": caixa_fechado_no_dia
     }
     return templates.TemplateResponse("funcionario_agenda.html", context)
 
@@ -772,6 +793,10 @@ async def handle_form_agendamento(
         Coroutine[TemplateResponse]: Em caso de conflito de horário, re-renderiza a página da agenda com uma mensagem de erro.
     """
     # ... (código da função handle_form_agendamento)
+    if data_esta_com_caixa_fechado(db, data_agendamento):
+        error_message = "Não é possível criar agendamentos em uma data cujo caixa já foi fechado."
+        return await get_detalhes_funcionario(request, funcionario_id, db, data_agendamento, user, error=error_message)
+
     whatsapp_numeros = "".join(filter(str.isdigit, whatsapp_cliente))
     cliente = db.query(models.Cliente).filter(models.Cliente.whatsapp == whatsapp_numeros).first()
     if not cliente:
@@ -841,6 +866,10 @@ async def handle_form_bloqueio(
         Coroutine[TemplateResponse]: Em caso de conflito ou horário inválido, re-renderiza a página da agenda com uma mensagem de erro.
     """
     # ... (código da função handle_form_bloqueio)
+    if data_esta_com_caixa_fechado(db, inicio_data) or data_esta_com_caixa_fechado(db, fim_data):
+        error_message = "Não é possível criar bloqueios em um período vinculado a uma data com caixa fechado."
+        return await get_detalhes_funcionario(request, funcionario_id, db, inicio_data, user, error=error_message)
+
     inicio_completo = datetime.combine(inicio_data, inicio_hora)
     fim_completo = datetime.combine(fim_data, fim_hora)
     if fim_completo <= inicio_completo:
@@ -914,6 +943,8 @@ async def finalizar_agendamento(
 
     if not db_agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if data_esta_com_caixa_fechado(db, db_agendamento.data_hora.date()):
+        raise HTTPException(status_code=403, detail="Não é possível finalizar agendamentos de uma data com caixa fechado.")
 
     sao_paulo_tz = pytz.timezone('America/Sao_Paulo')
     agora_local_aware = datetime.now(sao_paulo_tz)
@@ -1006,6 +1037,8 @@ async def cancelar_agendamento(
     db_agendamento = db.query(models.Agendamento).filter(models.Agendamento.id == agendamento_id).first()
     if not db_agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if data_esta_com_caixa_fechado(db, db_agendamento.data_hora.date()):
+        raise HTTPException(status_code=403, detail="Não é possível cancelar agendamentos de uma data com caixa fechado.")
     if db_agendamento.data_hora.date() < date.today():
         raise HTTPException(status_code=403, detail="Não é possível cancelar agendamentos de dias anteriores.")
     if db_agendamento.status != models.StatusAgendamento.CANCELADO:
@@ -1052,6 +1085,8 @@ async def get_pagina_editar_agendamento(
     ).filter(models.Agendamento.id == agendamento_id).first()
     if not agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if data_esta_com_caixa_fechado(db, agendamento.data_hora.date()):
+        raise HTTPException(status_code=403, detail="Não é possível editar agendamentos de uma data com caixa fechado.")
     context = {"request": request, "agendamento": agendamento, "user": user}
     return templates.TemplateResponse("editar_agendamento.html", context)
 
@@ -1095,6 +1130,10 @@ async def handle_form_editar_agendamento(
     ).filter(models.Agendamento.id == agendamento_id).first()
     if not db_agendamento:
         raise HTTPException(status_code=404, detail="Agendamento não encontrado")
+    if data_esta_com_caixa_fechado(db, db_agendamento.data_hora.date()):
+        error_message = "Não é possível editar um agendamento de uma data com caixa já fechado."
+        context = {"request": request, "agendamento": db_agendamento, "error": error_message, "user": user}
+        return templates.TemplateResponse("editar_agendamento.html", context, status_code=403)
     horario_termino_agendamento = db_agendamento.data_hora + timedelta(minutes=db_agendamento.duracao_efetiva_minutos)
     prazo_limite_edicao = horario_termino_agendamento + timedelta(hours=1)
     if datetime.now() > prazo_limite_edicao:
@@ -1154,6 +1193,8 @@ async def cancelar_bloqueio(
     db_bloqueio = db.query(models.Bloqueio).filter(models.Bloqueio.id == bloqueio_id).first()
     if not db_bloqueio:
         raise HTTPException(status_code=404, detail="Bloqueio não encontrado")
+    if data_esta_com_caixa_fechado(db, db_bloqueio.inicio.date()) or data_esta_com_caixa_fechado(db, db_bloqueio.fim.date()):
+        raise HTTPException(status_code=403, detail="Não é possível remover bloqueios de uma data com caixa fechado.")
     funcionario_id = db_bloqueio.funcionario_id
     data_bloqueio = db_bloqueio.inicio.date()
     db.delete(db_bloqueio)
@@ -1305,4 +1346,3 @@ async def get_pagina_logs(
 
     context = {"request": request, "logs": logs, "user": user}
     return templates.TemplateResponse("logs.html", context)
-
